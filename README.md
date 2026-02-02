@@ -28,9 +28,9 @@ streamlit run main_app.py
 
 ## 👥 Ekip
 
-- A. Emre
-- S. Görkem  
-- Tunahan S.
+- A. Emre Aydın
+- S. Görkem Türköz
+- Tunahan Sarı
 
 ## 📄 Lisans
 
