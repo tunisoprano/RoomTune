@@ -22,11 +22,21 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- SESSION STATE ---
+
+# --- SESSION STATE & CALLBACKS ---
+# Bu fonksiyon, herhangi bir parametre değiştiğinde hafızayı temizler
+def reset_all():
+    st.session_state.rir = None
+    st.session_state.rt60_before = None
+    st.session_state.ga_result = None
+
+
 if 'rir' not in st.session_state:
     st.session_state.rir = None
 if 'rt60_before' not in st.session_state:
     st.session_state.rt60_before = None
+if 'ga_result' not in st.session_state:
+    st.session_state.ga_result = None
 
 
 # --- PINN MODEL SINIFI ---
@@ -66,14 +76,15 @@ with st.sidebar:
     st.title("🎛️ RoomTune Ayarları")
     st.markdown("---")
     st.subheader("🏠 Oda Boyutları (m)")
+    # on_change=reset_all ekledik. Değer değişince eski sonuçlar silinecek.
     c1, c2, c3 = st.columns(3)
-    lx = c1.number_input("Uzunluk", 2.0, 15.0, 6.0)
-    ly = c2.number_input("Genişlik", 2.0, 15.0, 4.0)
-    lz = c3.number_input("Yükseklik", 2.0, 6.0, 3.0)
+    lx = c1.number_input("Uzunluk", 2.0, 15.0, 6.0, on_change=reset_all)
+    ly = c2.number_input("Genişlik", 2.0, 15.0, 4.0, on_change=reset_all)
+    lz = c3.number_input("Yükseklik", 2.0, 6.0, 3.0, on_change=reset_all)
 
     st.subheader("🎯 Hedefler")
-    target_rt60 = st.slider("Hedef RT60 (sn)", 0.2, 1.5, 0.5)
-    max_panels = st.slider("Max Panel Sayısı", 1, 6, 2)
+    target_rt60 = st.slider("Hedef RT60 (sn)", 0.2, 1.5, 0.5, on_change=reset_all)
+    max_panels = st.slider("Max Panel Sayısı", 1, 6, 2, on_change=reset_all)
     st.info("A. Emre, S. Görkem, Tunahan S.")
 
 # 2. ANA EKRAN
@@ -107,20 +118,17 @@ with tab1:
     if st.button("🎬 Animasyonu Oluştur (Video)", type="primary"):
         with st.spinner("Dalga denklemi çözülüyor... (Yaklaşık 15-20 sn)"):
 
-            # Parametreler
             Nx, Ny = 60, 40
             Lx, Ly = lx, ly
             dx, dy = Lx / (Nx - 1), Ly / (Ny - 1)
             c = 343.0
             dt = 0.5 * dx / c
 
-            # Değişkenler
             u_prev = np.zeros((Nx, Ny))
             u_curr = np.zeros((Nx, Ny))
             u_next = np.zeros((Nx, Ny))
             sx, sy = int(Nx / 4), int(Ny / 3)
 
-            # Grafik
             fig_anim, ax_anim = plt.subplots(figsize=(8, 5))
             img = ax_anim.imshow(u_curr.T, origin='lower', extent=[0, Lx, 0, Ly],
                                  cmap='RdBu', vmin=-0.1, vmax=0.1, animated=True)
@@ -131,9 +139,7 @@ with tab1:
             STEPS_PER_FRAME = 15
 
 
-            # DÜZELTME BURADA YAPILDI: img parametre olarak eklendi, nonlocal silindi.
             def update(frame, u_prev=u_prev, u_curr=u_curr, u_next=u_next, img=img):
-
                 for _ in range(STEPS_PER_FRAME):
                     laplacian = (u_curr[2:, 1:-1] + u_curr[:-2, 1:-1] +
                                  u_curr[1:-1, 2:] + u_curr[1:-1, :-2] -
@@ -149,7 +155,6 @@ with tab1:
 
                     u_prev[:] = u_curr[:]
                     u_curr[:] = u_next[:]
-
                 img.set_array(u_curr.T)
                 return img,
 
@@ -171,14 +176,17 @@ with tab1:
         except:
             st.session_state.rt60_before = 0.0
 
+    if st.session_state.rir is not None:
         col1, col2 = st.columns(2)
         with col1:
             fig, ax = plt.subplots()
-            ax.plot(np.arange(len(rir)) / fs, rir)
+            ax.plot(np.arange(len(st.session_state.rir)) / 16000, st.session_state.rir)
             ax.set_title("Oda Dürtü Cevabı")
             st.pyplot(fig)
         with col2:
             st.metric("Ölçülen RT60", f"{st.session_state.rt60_before:.2f} sn", f"Hedef: {target_rt60} sn")
+    else:
+        st.warning("⚠️ Lütfen analiz butonuna basarak simülasyonu çalıştırın.")
 
 # --- TAB 2: PINN ---
 with tab2:
@@ -195,6 +203,62 @@ with tab2:
 # --- TAB 3: GENETİK ALGORİTMA ---
 with tab3:
     st.header("Genetik Algoritma Optimizasyonu")
+
     if st.button("🧬 Optimize Et"):
-        st.success("Çözüm Bulundu: [Güney Duvarı, Tavan]")
-        st.metric("Yeni RT60", "0.41 sn", delta="-0.35 sn")
+        # GÜNCELLEME: Eğer simülasyon verisi yoksa veya eskiyse uyar
+        if st.session_state.rt60_before is None:
+            st.error(
+                "⚠️ Önce 'Simülasyon' sekmesine gidip 'Analizi Başlat' butonuna basmalısın! Yeni oda boyutlarına göre veri hesaplanmalı.")
+        else:
+            # Buradaki algoritma artık güncel st.session_state.rt60_before değerini kullanır
+            import pygad
+
+
+            def fitness_func(ga_instance, solution, solution_idx):
+                # Basit matematiksel model (Demo amaçlı hızlandırılmış)
+                panel_count = np.sum(solution)
+                if panel_count > max_panels: return -9999  # Ceza puanı
+                if panel_count == 0: return -100
+
+                # Panel başına %15 sönümleme varsayımı (Gerçekte simülasyon yapılmalı ama GA içinde yavaş olur)
+                current_rt60 = st.session_state.rt60_before * (1 - (panel_count * 0.15))
+                error = abs(current_rt60 - target_rt60)
+                return 1.0 / (error + 0.0001)
+
+
+            ga_instance = pygad.GA(
+                num_generations=50,
+                num_parents_mating=4,
+                fitness_func=fitness_func,
+                sol_per_pop=10,
+                num_genes=6,  # 6 Duvar
+                gene_space=[0, 1],
+                suppress_warnings=True
+            )
+
+            ga_instance.run()
+            solution, solution_fitness, _ = ga_instance.best_solution()
+            st.session_state.ga_result = solution
+
+            st.success("En İyi Çözüm Bulundu!")
+
+            walls = ["Doğu", "Batı", "Kuzey", "Güney", "Tavan", "Zemin"]
+            col_res1, col_res2 = st.columns(2)
+
+            with col_res1:
+                st.markdown("### 🛠️ Uygulanacak İşlemler:")
+                applied = []
+                for i, val in enumerate(solution):
+                    if val == 1:
+                        st.info(f"✅ {walls[i]} Duvarına Panel Ekle")
+                        applied.append(walls[i])
+                if not applied: st.warning("Panel önerilmedi.")
+
+            with col_res2:
+                final_rt60 = st.session_state.rt60_before * (1 - (np.sum(solution) * 0.15))
+                fig, ax = plt.subplots()
+                ax.bar(["Başlangıç", "Optimize"], [st.session_state.rt60_before, final_rt60], color=['gray', 'green'])
+                ax.axhline(target_rt60, color='red', linestyle='--', label="Hedef")
+                ax.legend()
+                ax.set_ylabel("RT60 (saniye)")
+                st.pyplot(fig)
